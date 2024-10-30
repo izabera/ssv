@@ -52,12 +52,12 @@ struct ssv {
         inline u64 &offset(size_t idx) {
             auto endalloc = reinterpret_cast<char *>(this);
             auto end = reinterpret_cast<u64 *>(endalloc + capacity);
-            return end[-idx - 1];
+            return end[-ptrdiff_t(idx) - 1];
         }
         inline u64 offset(size_t idx) const {
             auto endalloc = reinterpret_cast<const char *>(this);
             auto end = reinterpret_cast<const u64 *>(endalloc + capacity);
-            return end[-idx - 1];
+            return end[-ptrdiff_t(idx) - 1];
         }
 
         std::string_view operator[](size_t idx) const {
@@ -85,7 +85,7 @@ struct ssv {
 
     union {
         struct {
-            Index inplace : 1, offsets : bitmask_size;
+            Index inplace : 1, lengths : bitmask_size;
             std::array<char, Bufsize> data{};
         };
         struct {
@@ -94,27 +94,31 @@ struct ssv {
             heapvec *heap;
         };
     };
+    // [[deprecated("Bufsize wastes space!!")]] constexpr static bool is_wasteful_f() { return {}; }
+    // constexpr static auto is_wasteful = Bufsize % sizeof(heapvec *) == 0 || is_wasteful_f();
 
-    struct desc {
+    struct decoded {
         u8 nfields;
         u8 size;
-        std::array<u8, Maxstrings> offarray;
+        std::array<u8, Maxstrings> lenarray;
     };
 
-    inline auto inplace_desc() const {
-        u64 offs = offsets;
-        u8 size{}, i{};
-        std::array<u8, Maxstrings> offarray{};
+    // this is a bounded number of iterations, on a very tiny amount of data
+    inline auto inplace_decode() const {
+        u64 lens = lengths;
+        u8 totalsize{}, i{};
+        std::array<u8, Maxstrings> lenarray{};
 
-        for (; (offs & mask) != mask && i < Maxstrings; offs >>= bits, i++) {
-            offarray[i] = offs & mask;
-            size += strlen(&data[offs & mask]) + 1;
+        for (; (lens & mask) != mask && i < Maxstrings; lens >>= bits, i++) {
+            lenarray[i] = lens & mask;
+            totalsize += lenarray[i] + 1;
+            // size += strlen(&data[lens & mask]) + 1;
             // needs strlen because the next offset could be the sentinel
             // (ssv doesn't actually store where a string ends)
             // todo: change this?
         }
 
-        return desc{i, size, offarray};
+        return decoded{i, totalsize, lenarray};
     }
 
   public:
@@ -122,14 +126,14 @@ struct ssv {
 
     ssv()
         : inplace(1),
-          offsets(fullmask) {}
+          lengths(fullmask) {}
 
     ssv(const ssv &other) {
         if (this == &other)
             return;
 
         inplace = other.inplace;
-        offsets = other.offsets;
+        lengths = other.lengths;
 
         if (inplace)
             data = other.data;
@@ -165,14 +169,14 @@ struct ssv {
     }
     ssv(std::initializer_list<std::string_view> list)
         : inplace(1),
-          offsets(fullmask) {
+          lengths(fullmask) {
         for (const auto &s : list)
             append(s);
     }
     template <typename inputit>
     ssv(inputit first, inputit last)
         : inplace(1),
-          offsets(fullmask) {
+          lengths(fullmask) {
         for (; first != last; ++first)
             append(*first);
     }
@@ -183,14 +187,14 @@ struct ssv {
     }
 
     u64 size() const {
-        auto desc = inplace_desc();
-        return inplace ? desc.size : desc.size + heap->size();
+        auto decoded = inplace_decode();
+        return inplace ? decoded.size : decoded.size + heap->size();
     }
     u64 nstrings() const {
-        auto desc = inplace_desc();
-        return inplace ? desc.nfields : desc.nfields + heap->nstrings;
+        auto decoded = inplace_decode();
+        return inplace ? decoded.nfields : decoded.nfields + heap->nstrings;
     }
-    bool empty() const { return inplace ? (offsets & mask) == mask : heap->nstrings == 0; }
+    bool empty() const { return inplace ? (lengths & mask) == mask : heap->nstrings == 0; }
     void clear() { *this = {}; }
 
     bool isonheap() const { return inplace == 0; }
@@ -200,50 +204,56 @@ struct ssv {
 
     void append(std::string_view s) {
         if (inplace) {
-            auto desc = inplace_desc();
-            if (desc.nfields < Maxstrings && desc.size + s.size() + 1 <= sizeof(data)) {
-                offsets &= ~(mask << (desc.nfields * bits));
-                offsets |= u64{desc.size} << (desc.nfields * bits);
+            auto decoded = inplace_decode();
+            if (decoded.nfields < Maxstrings && decoded.size + s.size() + 1 <= sizeof(data)) {
+                lengths &= ~(mask << (decoded.nfields * bits));
+                lengths |= u64{s.size()} << (decoded.nfields * bits);
                 // we started with all 1s so the next field already contains the mask
 
-                char *dest = &data[desc.size];
+                char *dest = &data[decoded.size];
                 memcpy(dest, s.data(), s.size());
                 dest[s.size()] = 0;
             }
             else {
                 size_t spaceneeded = s.size() + 1 + sizeof(u64) + sizeof(heapvec);
+                std::array<u8, Maxstrings> offsets;
 
                 // copy all the strings overlapping with the pointer to the heap
                 int mustmove = Maxstrings;
-                for (int i = 0; i < desc.nfields; i++) {
-                    auto len = strlen(&data[desc.offarray[i]]) + 1;
-                    if (desc.offarray[i] + len > sizeof datasmol) {
+                size_t totalsize{};
+                for (int i = 0; i < decoded.nfields; i++) {
+                    offsets[i] = totalsize;
+                    totalsize += decoded.lenarray[i] + 1;
+                    if (totalsize > sizeof datasmol) {
                         if (mustmove == Maxstrings)
                             mustmove = i;
-                        spaceneeded += len;
+                        spaceneeded += decoded.lenarray[i] + 1;
                     }
                 }
+                // start with at least this much space
                 if (spaceneeded < sizeof(*this))
                     spaceneeded = sizeof(*this);
 
+                // align to 8 bytes because the offsets are u64s
                 spaceneeded = (spaceneeded + 7) / 8 * 8;
 
                 void *alloc = calloc(1, spaceneeded);
                 if (alloc == nullptr)
                     throw std::bad_alloc();
 
-                heap = reinterpret_cast<decltype(heap)>(alloc);
-                heap->capacity = spaceneeded;
+                auto heapalloc = reinterpret_cast<decltype(heap)>(alloc);
+                heapalloc->capacity = spaceneeded;
 
                 inplace = 0;
                 if (mustmove != Maxstrings) {
                     // mark them as not in place anymore
-                    offsets |= mask << (mustmove * bits);
+                    lengths |= mask << (mustmove * bits);
 
-                    for (; mustmove < desc.nfields; mustmove++)
-                        heap->append(&data[desc.offarray[mustmove]]);
+                    for (; mustmove < decoded.nfields; mustmove++)
+                        heapalloc->append({&data[offsets[mustmove]], decoded.lenarray[mustmove]});
                 }
 
+                heap = heapalloc;
                 heap->append(s);
             }
         }
@@ -271,10 +281,14 @@ struct ssv {
     }
 
     std::string_view operator[](size_t idx) const {
-        auto desc = inplace_desc();
-        if (idx < desc.nfields)
-            return {&data[desc.offarray[idx]]};
-        return (*heap)[idx - desc.nfields];
+        auto decoded = inplace_decode();
+        if (idx < decoded.nfields) {
+            size_t offset = 0;
+            for (auto i = 0u; i < idx; i++)
+                offset += decoded.lenarray[i] + 1;
+            return {&data[offset], decoded.lenarray[idx]};
+        }
+        return (*heap)[idx - decoded.nfields];
     }
 
     struct iterator {

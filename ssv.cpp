@@ -2,6 +2,7 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <vector>
 
 int main(int argc, char **argv) {
     const bool verbose = argc < 2 ? true : std::string{argv[1]} == "quiet" ? false : true;
@@ -111,13 +112,23 @@ int main(int argc, char **argv) {
     assert_equal(strvec.size(), strvec.bufsize() + 1);
     assert_equal(strvec.isinplace(), false);
 
-    // ssv stores null terminated strings
+    // ssv stores arbitrary strings that can contain \0
     strvec.clear();
-    strvec.append(std::string(10, '\0'));
-    assert_equal(strvec.nstrings(), 1u);
-    assert_equal(strvec.size(), 1u);
+    std::string s(10, '\0');
+    s += "meow";
+    s += s;
+    total = 0;
+    for (auto i = 0u; i < strvec.maxstrings() * 2; i++) {
+        strvec.append(s);
+        total += s.size() + 1;
+        assert_equal(strvec.nstrings(), i + 1);
+        assert_equal(strvec.size(), total);
+        assert_equal(strvec[rand() % (i + 1)], s);
+        assert_equal(strvec.isinplace(),
+                     total <= strvec.bufsize() && i + 1u <= strvec.maxstrings());
+    }
 
-    // multiple empty strings, also going to the heap
+    // multiple empty strings, including going to the heap
     strvec.clear();
     for (auto i = 0u; i < strvec.bufsize() * 2; i++) {
         strvec.append("");
@@ -129,6 +140,7 @@ int main(int argc, char **argv) {
     // bunch of variable sized strings
     strvec = {};
     total = 0;
+    std::vector<std::string> vec;
     for (char c = 'a'; c < 'z'; c++) {
         std::string s((rand() % 10) + 1, c);
         strvec.append(s);
@@ -137,6 +149,10 @@ int main(int argc, char **argv) {
         assert_equal(strvec.size(), total);
         assert_equal(strvec.isinplace(),
                      total <= strvec.bufsize() && c - 'a' + 1u <= strvec.maxstrings());
+
+        vec.push_back(s);
+        auto r = rand() % vec.size();
+        assert_equal(vec[r], strvec[r]);
     }
 
     // different parameters
