@@ -105,13 +105,15 @@ struct ssv {
 
     // this is a bounded number of iterations, on a very tiny amount of data
     inline auto inplace_decode() const {
-        u64 lens = lengths;
+        auto lens = lengths;
         u8 totalsize{}, i{};
         std::array<u8, Maxstrings> lenarray{};
 
-        for (; (lens & mask) != mask && i < Maxstrings; lens >>= bits, i++) {
-            lenarray[i] = lens & mask;
-            totalsize += lenarray[i] + 1;
+        for (auto j = 0u; j < Maxstrings; j++) {
+            lenarray[j] = (lens >> (bits * j)) & mask;
+            auto valid = lenarray[j] != mask;
+            totalsize += valid * (lenarray[j] + 1);
+            i += valid;
         }
 
         return decoded{i, totalsize, lenarray};
