@@ -1,4 +1,5 @@
 #include "ssv.hpp"
+#include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -178,5 +179,34 @@ int main(int argc, char **argv) {
     auto vecbybeginend = ssv(strvec.begin(), strvec.end());
     assert_equal(strvec.size(), vecbybeginend.size());
 
+    // perf test
+    auto time = [](auto lambda) {
+        const auto start{std::chrono::steady_clock::now()};
+        lambda();
+        const auto end{std::chrono::steady_clock::now()};
+        return std::chrono::duration<double, std::milli>{end - start};
+    };
+
+    auto myvectime = time([] {
+        srand(1234);
+        for (auto q = 0; q < 1000000; q++) {
+            ssv myvec;
+            for (auto i = 0u; i < ssv<>::Maxstrings; i++)
+                myvec.append(std::string(rand() % 10, 'q'));
+        }
+    });
+    std::cout << "ssv took " << myvectime << '\n';
+
+    auto stdvectime = time([] {
+        srand(1234);
+        for (auto q = 0; q < 1000000; q++) {
+            std::vector<std::string> myvec;
+            for (auto i = 0u; i < ssv<>::Maxstrings; i++)
+                myvec.push_back(std::string(rand() % 10, 'q'));
+        }
+    });
+    std::cout << "std::vector<std::string> took " << stdvectime << '\n';
+
+    std::cout << "==== test result ====\n";
     std::cout << passcount << " tests pass, " << failcount << " tests fail\n";
 }

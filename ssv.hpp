@@ -112,10 +112,6 @@ struct ssv {
         for (; (lens & mask) != mask && i < Maxstrings; lens >>= bits, i++) {
             lenarray[i] = lens & mask;
             totalsize += lenarray[i] + 1;
-            // size += strlen(&data[lens & mask]) + 1;
-            // needs strlen because the next offset could be the sentinel
-            // (ssv doesn't actually store where a string ends)
-            // todo: change this?
         }
 
         return decoded{i, totalsize, lenarray};
