@@ -8,16 +8,29 @@
 #include <new>
 #include <string_view>
 
-// ssv: short string vector
-// an append-only vector of immutable strings:
-// - 128 bytes long
+// ssv: small string vector, a space-efficient append-only vector of immutable strings
+// - 128 bytes long by default
 // - can store up to 120 bytes in place
 // - can store up to 9 strings in place
 // - then spills to a contiguous buffer on the heap
 
-class ssv {
+// always stores at least Bufsize bytes in place
+template <unsigned Bufsize = 120, typename Index = uint64_t>
+struct ssv {
     using u8 = uint8_t;
+    using u16 = uint16_t;
+    using u32 = uint32_t;
     using u64 = uint64_t;
+
+    // mask is used as a sentinel
+    static_assert(Bufsize != std::bit_ceil(Bufsize) - 1, "Bufsize cannot be a power of 2 - 1");
+    constexpr static auto bits = std::bit_width(Bufsize);
+    constexpr static auto mask = (Index(1) << bits) - 1;
+    static_assert(mask > Bufsize, "not enough free bits for the sentinel");
+
+    constexpr static auto Maxstrings = (sizeof(Index) * 8 - 1) / bits;
+    constexpr static auto bitmask_size = Maxstrings * bits;
+    constexpr static Index fullmask = (Index(1) << bitmask_size) - 1;
 
     struct heapvec {
         u64 capacity;
@@ -41,7 +54,7 @@ class ssv {
             auto end = reinterpret_cast<u64 *>(endalloc + capacity);
             return end[-idx - 1];
         }
-        inline const u64 &offset(size_t idx) const {
+        inline u64 offset(size_t idx) const {
             auto endalloc = reinterpret_cast<const char *>(this);
             auto end = reinterpret_cast<const u64 *>(endalloc + capacity);
             return end[-idx - 1];
@@ -68,13 +81,16 @@ class ssv {
             offset(nstrings++) = off + s.size() + 1;
         }
     };
-
-    u64 inplace : 1, offsets : 63;
+    static_assert(Bufsize >= sizeof(heapvec *), "Bufsize is smaller than a pointer!");
 
     union {
-        std::array<char, 120> data{};
         struct {
-            std::array<char, 120 - 8> datasmol;
+            Index inplace : 1, offsets : bitmask_size;
+            std::array<char, Bufsize> data{};
+        };
+        struct {
+            Index index_storage;
+            std::array<char, (Bufsize - sizeof(heapvec *))> datasmol;
             heapvec *heap;
         };
     };
@@ -82,62 +98,40 @@ class ssv {
     struct desc {
         u8 nfields;
         u8 size;
-        std::array<u8, 9> offarray;
+        std::array<u8, Maxstrings> offarray;
     };
 
-    auto inplace_desc() const {
+    inline auto inplace_desc() const {
         u64 offs = offsets;
         u8 size{}, i{};
-        std::array<u8, 9> offarray{};
+        std::array<u8, Maxstrings> offarray{};
 
-        for (; (offs & 0x7f) != 0x7f && i < 9; offs >>= 7, i++) {
-            offarray[i] = offs & 0x7f;
-            size += strlen(&data[offs & 0x7f]) + 1;
-            // todo: avoid strlen if the next offset isn't 0x7f
+        for (; (offs & mask) != mask && i < Maxstrings; offs >>= bits, i++) {
+            offarray[i] = offs & mask;
+            size += strlen(&data[offs & mask]) + 1;
+            // needs strlen because the next offset could be the sentinel
+            // (ssv doesn't actually store where a string ends)
+            // todo: change this?
         }
 
         return desc{i, size, offarray};
     }
 
   public:
+    using index = Index;
+
     ssv()
         : inplace(1),
-          offsets(0x7f) {}
+          offsets(fullmask) {}
 
-    ssv(const ssv &other)
-        : inplace(other.inplace),
-          offsets(other.offsets) {
-        if (other.inplace)
-            data = other.data;
-        else {
-            datasmol = other.datasmol;
-            void *alloc = malloc(other.heap->capacity);
-            if (alloc == nullptr)
-                throw std::bad_alloc();
-            heap = reinterpret_cast<decltype(heap)>(alloc);
-            memcpy(heap, other.heap, other.heap->capacity);
-        }
-    }
-
-    ssv(ssv &&other) noexcept
-        : inplace(other.inplace),
-          offsets(other.offsets) {
-        if (other.inplace)
-            data = other.data;
-        else {
-            datasmol = other.datasmol;
-            heap = other.heap;
-            other.inplace = 1;
-        }
-    }
-    ssv &operator=(const ssv &other) {
-        if (!inplace)
-            free(heap);
+    ssv(const ssv &other) {
+        if (this == &other)
+            return;
 
         inplace = other.inplace;
         offsets = other.offsets;
 
-        if (other.inplace)
+        if (inplace)
             data = other.data;
         else {
             datasmol = other.datasmol;
@@ -147,23 +141,40 @@ class ssv {
             heap = reinterpret_cast<heapvec *>(alloc);
             memcpy(heap, other.heap, other.heap->capacity);
         }
-        return *this;
     }
-    ssv &operator=(ssv &&other) {
-        if (!inplace)
-            free(heap);
-
-        inplace = other.inplace;
-        offsets = other.offsets;
-
-        if (other.inplace)
-            data = other.data;
-        else {
-            datasmol = other.datasmol;
-            heap = other.heap;
-            other.inplace = 1;
+    ssv(ssv &&other) noexcept {
+        if (this == &other)
+            return;
+        std::swap(data, other.data);
+        std::swap(index_storage, other.index_storage);
+    }
+    ssv &operator=(const ssv &other) noexcept {
+        if (this != &other) {
+            ssv tmp(other);
+            std::swap(data, tmp.data);
+            std::swap(index_storage, tmp.index_storage);
         }
         return *this;
+    }
+    ssv &operator=(ssv &&other) noexcept {
+        if (this != &other) {
+            std::swap(data, other.data);
+            std::swap(index_storage, other.index_storage);
+        }
+        return *this;
+    }
+    ssv(std::initializer_list<std::string_view> list)
+        : inplace(1),
+          offsets(fullmask) {
+        for (const auto &s : list)
+            append(s);
+    }
+    template <typename inputit>
+    ssv(inputit first, inputit last)
+        : inplace(1),
+          offsets(fullmask) {
+        for (; first != last; ++first)
+            append(*first);
     }
 
     ~ssv() {
@@ -179,48 +190,55 @@ class ssv {
         auto desc = inplace_desc();
         return inplace ? desc.nfields : desc.nfields + heap->nstrings;
     }
+    bool empty() const { return inplace ? (offsets & mask) == mask : heap->nstrings == 0; }
+    void clear() { *this = {}; }
+
+    bool isonheap() const { return inplace == 0; }
+    bool isinplace() const { return inplace == 1; }
+    constexpr static auto bufsize() { return Bufsize; }
+    constexpr static auto maxstrings() { return Maxstrings; }
 
     void append(std::string_view s) {
         if (inplace) {
             auto desc = inplace_desc();
-            if (desc.nfields < 9 && desc.size + s.size() + 1 <= sizeof(data)) {
-                offsets &= ~(0x7full << (desc.nfields * 7));
-                offsets |= u64{desc.size} << (desc.nfields * 7);
-                offsets |= 0x7full << ((desc.nfields + 1) * 7);
+            if (desc.nfields < Maxstrings && desc.size + s.size() + 1 <= sizeof(data)) {
+                offsets &= ~(mask << (desc.nfields * bits));
+                offsets |= u64{desc.size} << (desc.nfields * bits);
+                // we started with all 1s so the next field already contains the mask
 
                 char *dest = &data[desc.size];
                 memcpy(dest, s.data(), s.size());
                 dest[s.size()] = 0;
             }
             else {
-                size_t capacity = s.size() + 1;
+                size_t spaceneeded = s.size() + 1 + sizeof(u64) + sizeof(heapvec);
 
                 // copy all the strings overlapping with the pointer to the heap
-                int mustmove = 9;
+                int mustmove = Maxstrings;
                 for (int i = 0; i < desc.nfields; i++) {
                     auto len = strlen(&data[desc.offarray[i]]) + 1;
                     if (desc.offarray[i] + len > sizeof datasmol) {
-                        if (mustmove == 9)
+                        if (mustmove == Maxstrings)
                             mustmove = i;
-                        capacity += len;
+                        spaceneeded += len;
                     }
                 }
-                if (capacity < 128)
-                    capacity = 128;
+                if (spaceneeded < sizeof(*this))
+                    spaceneeded = sizeof(*this);
 
-                capacity = std::bit_ceil(capacity);
+                spaceneeded = (spaceneeded + 7) / 8 * 8;
 
-                void *alloc = calloc(1, capacity);
+                void *alloc = calloc(1, spaceneeded);
                 if (alloc == nullptr)
                     throw std::bad_alloc();
 
                 heap = reinterpret_cast<decltype(heap)>(alloc);
-                heap->capacity = capacity;
+                heap->capacity = spaceneeded;
 
                 inplace = 0;
-                if (mustmove != 9) {
+                if (mustmove != Maxstrings) {
                     // mark them as not in place anymore
-                    offsets |= 0x7full << (mustmove * 7);
+                    offsets |= mask << (mustmove * bits);
 
                     for (; mustmove < desc.nfields; mustmove++)
                         heap->append(&data[desc.offarray[mustmove]]);
@@ -279,6 +297,4 @@ class ssv {
     };
     auto begin() const { return iterator(this, 0); }
     auto end() const { return iterator(this, nstrings()); }
-
-    friend std::ostream &operator<<(std::ostream &stream, const ssv &s);
 };
