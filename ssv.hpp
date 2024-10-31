@@ -66,14 +66,14 @@ struct ssv {
             return {&data()[offset(idx - 1)], offset(idx) - offset(idx - 1) - 1};
         }
 
-        inline auto size() const { return nstrings == 0 ? 0 : offset(nstrings - 1); }
+        inline auto fullsize() const { return nstrings == 0 ? 0 : offset(nstrings - 1); }
         inline auto usable() const {
-            return capacity - sizeof *this - size() - nstrings * sizeof(u64);
+            return capacity - sizeof *this - fullsize() - nstrings * sizeof(u64);
         }
 
         // caller needs to know that there's enough space!!!  it can't realloc itself!!!
         inline void append(std::string_view s) {
-            auto off = size();
+            auto off = fullsize();
             auto buf = data() + off;
 
             memcpy(buf, s.data(), s.size());
@@ -169,14 +169,14 @@ struct ssv {
         : inplace(1),
           lengths(fullmask) {
         for (const auto &s : list)
-            append(s);
+            push_back(s);
     }
     template <typename inputit>
     ssv(inputit first, inputit last)
         : inplace(1),
           lengths(fullmask) {
         for (; first != last; ++first)
-            append(*first);
+            push_back(*first);
     }
 
     ~ssv() {
@@ -184,11 +184,11 @@ struct ssv {
             free(heap);
     }
 
-    u64 size() const {
+    u64 fullsize() const {
         auto decoded = inplace_decode();
-        return inplace ? decoded.size : decoded.size + heap->size();
+        return inplace ? decoded.size : decoded.size + heap->fullsize();
     }
-    u64 nstrings() const {
+    u64 size() const {
         auto decoded = inplace_decode();
         return inplace ? decoded.nfields : decoded.nfields + heap->nstrings;
     }
@@ -200,7 +200,9 @@ struct ssv {
     constexpr static auto bufsize() { return Bufsize; }
     constexpr static auto maxstrings() { return Maxstrings; }
 
-    void append(std::string_view s) {
+    constexpr static auto reserve(size_t) {}
+
+    void push_back(std::string_view s) {
         if (inplace) {
             auto decoded = inplace_decode();
             if (decoded.nfields < Maxstrings && decoded.size + s.size() + 1 <= sizeof(data)) {
@@ -270,11 +272,42 @@ struct ssv {
                 for (size_t i = 0; i < nstrings; i++)
                     heapalloc->offset(i) = heap->offset(i);
 
-                memcpy(heapalloc->data(), heap->data(), heap->size());
+                memcpy(heapalloc->data(), heap->data(), heap->fullsize());
                 free(heap);
                 heap = reinterpret_cast<decltype(heap)>(heapalloc);
             }
             heap->append(s);
+        }
+    }
+    void pop_back() {
+        if (inplace) {
+            auto decoded = inplace_decode();
+            lengths |= mask << ((decoded.nfields - 1) * bits);
+        }
+        else
+            heap->nstrings--;
+    }
+
+    void resize(size_t idx) {
+        auto decoded = inplace_decode();
+        auto sz = size();
+        auto onstack = decoded.nfields;
+        auto onheap = sz - decoded.nfields;
+
+        if (idx > sz)
+            throw std::out_of_range("out of range");
+
+        if (onheap > 0) {
+            if (idx > onstack)
+                heap->nstrings -= idx - onstack;
+            else {
+                free(heap);
+                inplace = 1;
+            }
+        }
+        if (onstack > idx) {
+            for (auto i = idx; i < Maxstrings; i++)
+                lengths |= mask << (i * bits);
         }
     }
 
@@ -288,6 +321,16 @@ struct ssv {
         }
         return (*heap)[idx - decoded.nfields];
     }
+    std::string_view at(size_t idx) const {
+        auto decoded = inplace_decode();
+        if (idx < decoded.nfields)
+            return (*this)[idx];
+        else if (!inplace && idx - decoded.nfields < heap->nstrings)
+            return (*heap)[idx - decoded.nfields];
+        throw std::out_of_range("out of range");
+    }
+    std::string_view front() const { return (*this)[0]; }
+    std::string_view back() const { return (*this)[size() - 1]; }
 
     struct iterator {
         const ssv *ptr;
@@ -308,5 +351,5 @@ struct ssv {
         bool operator!=(const iterator &other) const = default;
     };
     auto begin() const { return iterator(this, 0); }
-    auto end() const { return iterator(this, nstrings()); }
+    auto end() const { return iterator(this, size()); }
 };
