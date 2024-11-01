@@ -227,7 +227,7 @@ struct ssv {
                     if (totalsize > sizeof datasmol) {
                         if (mustmove == Maxstrings)
                             mustmove = i;
-                        spaceneeded += decoded.lenarray[i] + 1;
+                        spaceneeded += decoded.lenarray[i] + 1 + sizeof(u64);
                     }
                 }
                 // start with at least this much space
