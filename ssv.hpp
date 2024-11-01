@@ -246,11 +246,11 @@ struct ssv {
 
                 inplace = 0;
                 if (mustmove != Maxstrings) {
-                    // mark them as not in place anymore
-                    lengths |= mask << (mustmove * bits);
-
-                    for (; mustmove < decoded.nfields; mustmove++)
+                    for (; mustmove < decoded.nfields; mustmove++) {
+                        // mark them as not in place anymore
+                        lengths |= mask << (mustmove * bits);
                         heapalloc->append({&data[offsets[mustmove]], decoded.lenarray[mustmove]});
+                    }
                 }
 
                 heap = heapalloc;
