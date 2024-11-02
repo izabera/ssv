@@ -147,20 +147,23 @@ struct ssv {
     ssv(ssv &&other) noexcept {
         if (this == &other)
             return;
-        std::swap(data, other.data);
+        std::swap(datasmol, other.datasmol);
+        std::swap(heap, other.heap);
         std::swap(index_storage, other.index_storage);
     }
     ssv &operator=(const ssv &other) noexcept {
         if (this != &other) {
             ssv tmp(other);
-            std::swap(data, tmp.data);
+            std::swap(datasmol, tmp.datasmol);
+            std::swap(heap, tmp.heap);
             std::swap(index_storage, tmp.index_storage);
         }
         return *this;
     }
     ssv &operator=(ssv &&other) noexcept {
         if (this != &other) {
-            std::swap(data, other.data);
+            std::swap(datasmol, other.datasmol);
+            std::swap(heap, other.heap);
             std::swap(index_storage, other.index_storage);
         }
         return *this;
