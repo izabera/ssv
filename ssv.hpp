@@ -87,12 +87,12 @@ struct ssv {
     union {
         struct {
             Index inplace : 1, lengths : bitmask_size;
-            std::array<char, Bufsize> data{};
+            std::array<char, Bufsize> data;
         };
         struct {
             Index index_storage;
-            std::array<char, (Bufsize - sizeof(heapvec *))> datasmol;
-            heapvec *heap;
+            std::array<char, (Bufsize - sizeof(heapvec *))> datasmol{};
+            heapvec *heap{};
         };
     };
 
