@@ -1,12 +1,38 @@
 #include "ssv.hpp"
-#include <chrono>
 #include <iomanip>
 #include <iostream>
-#include <ranges>
 #include <sstream>
+#include <tuple>
 #include <unistd.h>
 #include <utility>
 #include <vector>
+
+// so this ended up looking a bit complicated
+// but really, it's like 90% tests 10% templates
+// it runs the tests exhaustively for all types
+
+// clang-format off
+template <unsigned size>
+using ssv_types = std::tuple<
+    ssv<size, uint8_t>,
+    ssv<size, uint16_t>,
+    ssv<size, uint32_t>,
+    ssv<size, uint64_t>
+>;
+// clang-format on
+
+template <typename... tuples>
+struct tuple_cat_helper {
+    using type = decltype(std::tuple_cat(std::declval<tuples>()...));
+};
+
+template <typename>
+struct generate_ssvs;
+
+template <unsigned... i>
+struct generate_ssvs<std::index_sequence<i...>> {
+    using type = typename tuple_cat_helper<ssv_types<i*4+16>...>::type;
+};
 
 // glibc's rand() was actually showing up in the profile...
 // we don't need fancy randomness for the perf tests here
@@ -27,6 +53,7 @@ constexpr auto type_name() {
     return name.substr(start, end - start);
 }
 
+// these unfortunately can't be part of the unit object
 bool tty;
 bool verbose;
 size_t total;
@@ -48,10 +75,7 @@ struct unit {
 #define YELLOW(...) (tty?"\x1b[33m":"") << __VA_ARGS__ << (tty?"\x1b[m":"")
 #define BLUE(...)   (tty?"\x1b[34m":"") << __VA_ARGS__ << (tty?"\x1b[m":"")
         // clang-format on
-        auto msg = tty ? //
-                       ok ? "[\x1b[32m OK \x1b[m]:" : "[\x1b[31mFAIL\x1b[m]:"
-                       : //
-                       ok ? "[ OK ]:" : "[FAIL]:";
+
         auto q = [](const auto &x) {
             if constexpr (requires { std::quoted(x); })
                 return std::quoted(x);
@@ -62,11 +86,13 @@ struct unit {
         std::stringstream ss;
         ss << std::boolalpha;
         if (ok) {
-            ss << msg << line << ": " << BLUE(exprstr) << " == " << GREEN(q(val)) << '\n';
+            ss << "[" << GREEN(" OK ") << "]" //
+               << line << ": " << BLUE(exprstr) << " == " << GREEN(q(val)) << '\n';
         }
         else {
-            ss << msg << line << ": " << BLUE(exprstr) << " == " << RED(q(val));
-            ss << " [expected " << GREEN(wantstr) << " (" << YELLOW(q(want)) << ")]\n";
+            ss << "[" << GREEN(" OK ") << "]"                            //
+               << line << ": " << BLUE(exprstr) << " == " << RED(q(val)) //
+               << " [expected " << GREEN(wantstr) << " (" << YELLOW(q(want)) << ")]\n";
         }
 
         if (!ok) {
@@ -293,6 +319,8 @@ struct unit {
 
         if (current++ < total)
             std::cout << '[' << current << '/' << total << "] ";
+        else
+            std::cout << "[total] ";
 
         std::cout << passcount << " test" << (passcount == 1 ? "" : "s") << " passed, " //
                   << failcount << " test" << (failcount == 1 ? "" : "s") << " failed\n";
@@ -303,89 +331,34 @@ struct unit {
     template <typename... t>
     static void run_tests() {
         total = sizeof...(t);
-        std::cout << "==== unit tests ====\n";
         (unit{}.template run<t>() + ...).show();
     };
+};
+
+template <typename tuple>
+struct tuple_to_pack;
+
+template <typename... types>
+struct tuple_to_pack<std::tuple<types...>> {
+    static void run() {
+        unit::run_tests<types...>();
+    }
 };
 
 int main(int argc, char **argv) {
     verbose = argc < 2 ? true : std::string{argv[1]} == "quiet" ? false : true;
     tty = isatty(1);
 
-    unit::run_tests<ssv<40>, ssv<40, uint16_t>, ssv<40, uint32_t>, //
-                    ssv<44>, ssv<44, uint16_t>, ssv<44, uint32_t>, //
-                    ssv<48>, ssv<48, uint16_t>, ssv<48, uint32_t>, //
-                    ssv<52>, ssv<52, uint16_t>, ssv<52, uint32_t>, //
-                    ssv<56>, ssv<56, uint16_t>, ssv<56, uint32_t>, //
-                    ssv<60>, ssv<60, uint16_t>, ssv<60, uint32_t>>();
+    std::cout << "==== unit tests ====\n";
 
-    std::cout << "==== perf tests ====\n";
+    using tuple = generate_ssvs<std::make_index_sequence<20>>::type;
+    //using tuple = std::tuple<ssv<40, uint8_t>, ssv<80, uint64_t>>;
+    tuple_to_pack<tuple>::run(); // calls tuple_to_pack base case
 
-    constexpr static auto maxiter = 1'000'000;
-    auto time = [&]<typename vectype>(auto lambda, auto... args) {
-        my_srand(1234);
-        const auto start{std::chrono::steady_clock::now()};
-        for (auto q = 0; q < maxiter; q++) {
-            lambda.template operator()<vectype>(args...);
-        }
-        const auto end{std::chrono::steady_clock::now()};
-        return std::chrono::duration<double, std::milli>{end - start};
-    };
-
-    struct test_description {
-        std::string_view name;
-        std::vector<std::string_view> args = {};
-    };
-
-    // cartesian product of both types and values
-    auto cartesian = [&]<typename... t>(test_description description, auto lambda, auto... args) {
-        std::cout << "--- " << description.name << '\n';
-        std::cout << "type";
-        for (const auto &name : description.args)
-            std::cout << '\t' << name;
-        std::cout << "\ttime\n";
-
-        auto tostringall = [&](auto &&...arg) {
-            auto tostring = [](auto arg) -> std::string {
-                if constexpr (requires { std::to_string(arg); })
-                    return std::to_string(arg);
-                std::stringstream ss;
-                if constexpr (requires { ss << arg; }) {
-                    ss << arg;
-                    return ss.str();
-                }
-                return "<unprintable>";
-            };
-            std::stringstream ss;
-            [&](auto &&...) {}((ss << tostring(arg) << '\t')...);
-            return ss.str();
-        };
-
-        for (auto tuple : std::ranges::cartesian_product_view(args...)) {
-            [](auto &&...) {}((std::cout << type_name<t>() << '\t' << std::apply(tostringall, tuple)
-                                         << time.template operator()<t>(lambda, tuple) << '\n')...);
-        }
-    };
-
-    constexpr static char qqqq[] = "qqqqqqqqq";
-    cartesian.template operator()<
-        // compare perf with these types
-        ssv<>, ssv<40>, std::vector<std::string> //
-        >(
-        {"push back test", {"reserve", "limit"}},
-
-        // the actual perf test
-        []<typename vectype>(auto tuple) {
-            vectype myvec;
-            auto [reserve, limit] = tuple;
-            if (reserve > 0)
-                myvec.reserve(reserve);
-            for (auto i = 0; i < limit; i++) {
-                auto r = my_rand() % sizeof qqqq;
-                myvec.push_back({qqqq + r, sizeof qqqq - r});
-            }
-        },
-
-        // test parameters
-        std::vector{0, 3, 5, 9}, std::vector{4, 5, 6, 9, 12, 15, 18});
+    // unit::run_tests<ssv<40>, ssv<40, uint8_t>, ssv<40, uint16_t>, ssv<40, uint32_t>, //
+    //                 ssv<44>, ssv<44, uint8_t>, ssv<44, uint16_t>, ssv<44, uint32_t>, //
+    //                 ssv<48>, ssv<48, uint8_t>, ssv<48, uint16_t>, ssv<48, uint32_t>, //
+    //                 ssv<52>, ssv<52, uint8_t>, ssv<52, uint16_t>, ssv<52, uint32_t>, //
+    //                 ssv<56>, ssv<56, uint8_t>, ssv<56, uint16_t>, ssv<56, uint32_t>, //
+    //                 ssv<60>, ssv<60, uint8_t>, ssv<60, uint16_t>, ssv<60, uint32_t>>();
 }

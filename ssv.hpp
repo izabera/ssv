@@ -94,8 +94,6 @@ struct ssv {
             heapvec *heap;
         };
     };
-    // [[deprecated("Bufsize wastes space!!")]] constexpr static bool is_wasteful_f() { return {}; }
-    // constexpr static auto is_wasteful = Bufsize % sizeof(heapvec *) == 0 || is_wasteful_f();
 
     struct decoded {
         u8 nfields;
