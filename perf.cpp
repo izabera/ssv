@@ -1,3 +1,4 @@
+#include "opts.hpp"
 #include "ssv.hpp"
 #include <chrono>
 #include <iostream>
@@ -25,7 +26,11 @@ constexpr auto type_name() {
     return name.substr(start, end - start);
 }
 
-int main() {
+int main(int argc, char **argv) {
+    options opt({});
+    for (int i = 1; i < argc; i++)
+        opt(argv[1]);
+
     std::cout << "==== perf tests ====\n";
 
     constexpr static auto maxiter = 1'000'000;
@@ -77,7 +82,7 @@ int main() {
     constexpr static char qqqq[] = "qqqqqqqqq";
     cartesian.template operator()<
         // compare perf with these types
-        ssv<>, ssv<40>, std::vector<std::string> //
+        ssv<>, ssv<40>, ssv<44, uint32_t>, std::vector<std::string> //
         >(
         {"push back test", {"reserve", "limit"}},
 

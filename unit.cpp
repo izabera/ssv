@@ -1,3 +1,4 @@
+#include "opts.hpp"
 #include "ssv.hpp"
 #include <iomanip>
 #include <iostream>
@@ -8,8 +9,7 @@
 #include <vector>
 
 // so this ended up looking a bit complicated
-// but really, it's like 90% tests 10% templates
-// it runs the tests exhaustively for all types
+// it just runs the tests exhaustively for all types
 
 // clang-format off
 template <unsigned size>
@@ -31,19 +31,8 @@ struct generate_ssvs;
 
 template <unsigned... i>
 struct generate_ssvs<std::index_sequence<i...>> {
-    using type = typename tuple_cat_helper<ssv_types<i*4+16>...>::type;
+    using type = typename tuple_cat_helper<ssv_types<i * 4 + 16>...>::type;
 };
-
-// glibc's rand() was actually showing up in the profile...
-// we don't need fancy randomness for the perf tests here
-uint64_t seed;
-inline void my_srand(unsigned s) {
-    seed = s - 1;
-}
-inline int my_rand(void) {
-    seed = 6364136223846793005ULL * seed + 1;
-    return seed >> 33;
-}
 
 template <typename T>
 constexpr auto type_name() {
@@ -55,7 +44,8 @@ constexpr auto type_name() {
 
 // these unfortunately can't be part of the unit object
 bool tty;
-bool verbose;
+bool verbose = false;
+bool errexit = false;
 size_t total;
 size_t current;
 
@@ -98,7 +88,8 @@ struct unit {
         if (!ok) {
             std::cerr << ss.str();
             failcount++;
-            // exit(1);
+            if (errexit)
+                exit(1);
         }
         else {
             if (verbose)
@@ -292,8 +283,8 @@ struct unit {
         strvec.push_back("meow");
         strvec.resize(strvec.size() - 1);
         assert_equal(strvec.isonheap(), true);
-        strvec.resize(2);
-        assert_equal(strvec.size(), 2u);
+        strvec.resize(1);
+        assert_equal(strvec.size(), 1u);
         assert_equal(strvec.isonheap(), false);
 
         // different parameters
@@ -333,32 +324,29 @@ struct unit {
         total = sizeof...(t);
         (unit{}.template run<t>() + ...).show();
     };
-};
 
-template <typename tuple>
-struct tuple_to_pack;
+    template <typename tuple>
+    struct tuple_to_pack;
 
-template <typename... types>
-struct tuple_to_pack<std::tuple<types...>> {
-    static void run() {
-        unit::run_tests<types...>();
-    }
+    template <typename... types>
+    struct tuple_to_pack<std::tuple<types...>> {
+        static void run() { run_tests<types...>(); }
+    };
 };
 
 int main(int argc, char **argv) {
-    verbose = argc < 2 ? true : std::string{argv[1]} == "quiet" ? false : true;
+    options opt({
+        {{"--verbose"sv, "-v"sv}, [] { verbose = true; }},
+        {{"--quiet"sv, "-q"sv}, [] { verbose = false; }},
+        {{"--errexit"sv, "-e"sv}, [] { errexit = true; }},
+    });
+    for (int i = 1; i < argc; i++)
+        opt(argv[1]);
+
     tty = isatty(1);
 
     std::cout << "==== unit tests ====\n";
 
     using tuple = generate_ssvs<std::make_index_sequence<20>>::type;
-    //using tuple = std::tuple<ssv<40, uint8_t>, ssv<80, uint64_t>>;
-    tuple_to_pack<tuple>::run(); // calls tuple_to_pack base case
-
-    // unit::run_tests<ssv<40>, ssv<40, uint8_t>, ssv<40, uint16_t>, ssv<40, uint32_t>, //
-    //                 ssv<44>, ssv<44, uint8_t>, ssv<44, uint16_t>, ssv<44, uint32_t>, //
-    //                 ssv<48>, ssv<48, uint8_t>, ssv<48, uint16_t>, ssv<48, uint32_t>, //
-    //                 ssv<52>, ssv<52, uint8_t>, ssv<52, uint16_t>, ssv<52, uint32_t>, //
-    //                 ssv<56>, ssv<56, uint8_t>, ssv<56, uint16_t>, ssv<56, uint32_t>, //
-    //                 ssv<60>, ssv<60, uint8_t>, ssv<60, uint16_t>, ssv<60, uint32_t>>();
+    unit::tuple_to_pack<tuple>::run();
 }

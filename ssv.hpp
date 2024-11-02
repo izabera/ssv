@@ -29,6 +29,7 @@ struct ssv {
     static_assert(mask > Bufsize, "not enough free bits for the sentinel");
 
     constexpr static auto Maxstrings = (sizeof(Index) * 8 - 1) / bits;
+    static_assert(Maxstrings != 0);
     constexpr static auto bitmask_size = Maxstrings * bits;
     constexpr static Index fullmask = (Index(1) << bitmask_size) - 1;
 
