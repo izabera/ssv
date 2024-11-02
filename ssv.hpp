@@ -305,7 +305,7 @@ struct ssv {
 
         if (onheap > 0) {
             if (idx > onstack)
-                heap->nstrings -= idx - onstack;
+                heap->nstrings = idx - onstack;
             else {
                 free(heap);
                 inplace = 1;
