@@ -261,15 +261,20 @@ struct ssv {
             }
         }
         else {
+            size_t spaceneeded = s.size() + 1 + sizeof(u64);
             // todo: make api less awkward
-            if (s.size() + 1 + sizeof(u64) > heap->usable()) {
+            if (spaceneeded > heap->usable()) {
+                spaceneeded += heap->capacity;
+                spaceneeded *= 2;
+                spaceneeded = (spaceneeded + 7) / 8 * 8;
+
                 // realloc doesn't help because we need to move the offsets
-                void *alloc = calloc(1, heap->capacity * 2);
+                void *alloc = calloc(1, spaceneeded);
                 if (alloc == nullptr)
                     throw std::bad_alloc();
 
                 auto heapalloc = reinterpret_cast<decltype(heap)>(alloc);
-                heapalloc->capacity = heap->capacity * 2;
+                heapalloc->capacity = spaceneeded;
 
                 auto nstrings = heapalloc->nstrings = heap->nstrings;
                 for (size_t i = 0; i < nstrings; i++)
